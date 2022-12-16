@@ -1,4 +1,5 @@
 import math
+
 import numpy as np
 import torch
 from torch import nn
@@ -7,7 +8,9 @@ from transformers import BertPreTrainedModel, AutoModel
 from transformers.activations import ACT2FN
 
 from fastcoref.utilities.consts import CATEGORIES, STOPWORDS
-from fastcoref.utilities.util import extract_clusters, extract_mentions_to_clusters, mask_tensor, get_pronoun_id, get_category_id
+from fastcoref.utilities.util import extract_clusters, extract_mentions_to_clusters, \
+    mask_tensor, get_pronoun_id, \
+    get_category_id
 
 
 class FullyConnectedLayer(Module):

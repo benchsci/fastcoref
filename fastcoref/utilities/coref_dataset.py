@@ -1,10 +1,8 @@
 import json
 import logging
-import os.path
 from collections import defaultdict
 
-import datasets
-from datasets import Dataset, Sequence, Value
+import pandas as pd
 from tqdm import tqdm
 
 from fastcoref.utilities import util, consts
@@ -60,7 +58,7 @@ def _tokenize(tokenizer, tokens, clusters, speakers):
             'subtoken_map': encoded_text.word_ids(),
             }
 
-# TODO: better to do it in batches
+
 def encode(example, tokenizer, nlp):
     if 'tokens' in example and example['tokens']:
         pass
@@ -69,14 +67,13 @@ def encode(example, tokenizer, nlp):
         spacy_doc = nlp(example['text'])
         example['tokens'] = [tok.text for tok in spacy_doc]
 
-        new_clusters = [[(spacy_doc.char_span(start, end).start,
-                          spacy_doc.char_span(start, end).end - 1)
+        # This will expand partial mentions to full mentions
+        n = len(spacy_doc.text)
+        new_clusters = [[(spacy_doc.char_span(start, end if end <= n else n,
+                                              alignment_mode="expand").start,
+                          spacy_doc.char_span(start, end if end <= n else n,
+                                              alignment_mode="expand").end - 1)
                          for start, end in cluster] for cluster in clusters]
-        # verify alignment
-        for cluster, new_cluster in zip(clusters, new_clusters):
-            for (s1, e1), (s2, e2) in zip(cluster, new_cluster):
-                mention = [tok.text for tok in nlp(example['text'][s1:e1])]
-                assert mention == example['tokens'][s2:e2 + 1], (mention, example['tokens'][s2:e2 + 1])
 
         example['clusters'] = new_clusters
     else:
@@ -129,22 +126,8 @@ def create(file, tokenizer, nlp):
 
                 yield minimum_doc
 
-    features = datasets.Features(
-        {
-            "doc_key": Value("string"),
-            "text": Value("string"),
-            "tokens": Sequence(Value("string")),
-            "speakers": Sequence(Value("string")),
-            "clusters": Sequence(Sequence(Sequence(Value("int64")))),
-        }
-    )
-
-    dataset = Dataset.from_generator(read_jsonlines, features=features, gen_kwargs={'file': file})
-    dataset = dataset.map(
-        encode, batched=False,
-        fn_kwargs={'tokenizer': tokenizer, 'nlp': nlp},
-        load_from_cache_file=True
-    )
+    dataset = pd.DataFrame.from_records(list(read_jsonlines(file)))
+    dataset = [encode(example, tokenizer, nlp) for i, example in dataset.iterrows()]
 
     return dataset
 
@@ -158,6 +141,6 @@ def create_batches(sampler, shuffle=True, cache_dir='cache'):
         for k, v in batch.items():
             batches_dict[k].append(v)
 
-    batches = Dataset.from_dict(batches_dict)
+    batches = pd.DataFrame.from_dict(batches_dict)
 
     return batches

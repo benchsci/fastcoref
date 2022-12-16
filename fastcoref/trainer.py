@@ -1,24 +1,22 @@
-import os
 import logging
-import numpy as np
-import torch
-import spacy
-import wandb
+import os
 from dataclasses import dataclass
 
+import numpy as np
+import spacy
+import torch
+import transformers
 from torch.optim.adamw import AdamW
 from tqdm.auto import tqdm
-
-import transformers
 from transformers import AutoConfig, AutoTokenizer, get_linear_schedule_with_warmup
 
 from fastcoref.coref_models.modeling_fcoref import FCorefModel
-
 from fastcoref.utilities import coref_dataset
 from fastcoref.utilities.collate import DynamicBatchSampler, LeftOversCollator
 from fastcoref.utilities.consts import SUPPORTED_MODELS
 from fastcoref.utilities.metrics import MentionEvaluator, CorefEvaluator
-from fastcoref.utilities.util import set_seed, create_mention_to_antecedent, create_clusters, \
+from fastcoref.utilities.util import set_seed, create_mention_to_antecedent, \
+    create_clusters, \
     output_evaluation_metrics, update_metrics, save_all
 
 # Setup logging
@@ -88,7 +86,6 @@ class CorefTrainer:
     def __init__(self, args: TrainingArgs, train_file, dev_file=None, test_file=None):
         transformers.logging.set_verbosity_error()
         self.args = args
-        wandb.init(project=self.args.output_dir, config=self.args)
 
         self._set_device()
 
@@ -215,18 +212,15 @@ class CorefTrainer:
                 if global_step % self.args.logging_steps == 0:
                     loss = (tr_loss - logging_loss) / self.args.logging_steps
                     logger.info(f"loss step {global_step}: {loss}")
-                    wandb.log({'loss': loss}, step=global_step)
                     logging_loss = tr_loss
 
                 # Evaluation
                 if self.dev_sampler is not None and global_step % self.args.eval_steps == 0:
                     results = self.evaluate(prefix=f'step_{global_step}', test=False)
-                    wandb.log(results, step=global_step)
 
                     f1 = results["f1"]
                     if f1 > best_f1:
                         best_f1, best_global_step = f1, global_step
-                        wandb.run.summary["best_f1"] = best_f1
 
                         # Save model
                         output_dir = os.path.join(self.args.output_dir, f'model')
