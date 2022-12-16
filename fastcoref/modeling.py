@@ -1,22 +1,23 @@
-import json
-from abc import ABC
-
 import logging
-from typing import List, Union
+from abc import ABC
+from typing import List
 
+import numpy as np
+import pandas as pd
+import spacy
 import torch
 import transformers
-import numpy as np
-from tqdm.auto import tqdm
-from transformers import AutoConfig, AutoTokenizer
-from datasets import Dataset
-import spacy
 from spacy.cli import download
+from tqdm.auto import tqdm
+from transformers import AutoConfig, AutoTokenizer, BatchEncoding
 
 from fastcoref.coref_models.modeling_fcoref import FCorefModel
 from fastcoref.coref_models.modeling_lingmess import LingMessModel
-from fastcoref.utilities.util import set_seed, create_mention_to_antecedent, create_clusters, align_to_char_level, encode
-from fastcoref.utilities.collate import LeftOversCollator, DynamicBatchSampler, PadCollator
+from fastcoref.utilities.collate import LeftOversCollator, DynamicBatchSampler, \
+    PadCollator
+from fastcoref.utilities.util import set_seed, create_mention_to_antecedent, \
+    create_clusters, align_to_char_level, \
+    encode
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -67,6 +68,13 @@ class CorefResult:
 
 class CorefModel(ABC):
     def __init__(self, model_name_or_path, coref_class, collator_class, enable_progress_bar, device=None, nlp=None):
+        """Initializer.
+
+        Args:
+            model_name_or_path: the model name if loading from huggingface hub or the path to a checkpoint file
+            enable_progress_bar: whether to enable a progress bar
+            device: 'cpu' or 'cuda'
+        """
         self.model_name_or_path = model_name_or_path
         self.device = device
         self.seed = 42
@@ -109,7 +117,7 @@ class CorefModel(ABC):
         self.model.to(self.device)
 
         for key, val in loading_info.items():
-            logger.info(f'{key}: {list(set(val) - set(["longformer.embeddings.position_ids"]))}')
+            logger.info(f'{key}: {list(set(val) - {"longformer.embeddings.position_ids"})}')
         t_params, h_params = [p / 1000000 for p in self.model.num_parameters()]
         logger.info(f'Model Parameters: {t_params + h_params:.1f}M, '
                     f'Transformer: {t_params:.1f}M, Coref head: {h_params:.1f}M')
@@ -118,106 +126,151 @@ class CorefModel(ABC):
         transformers.logging.set_verbosity_error()
 
     def _set_device(self):
+        """Sets the device of the model 'cpu' or 'cuda'."""
+
         if self.device is None:
-            self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = torch.device(self.device)
         self.n_gpu = torch.cuda.device_count()
 
-    def _create_dataset(self, texts, is_split_into_words):
-        logger.info(f'Tokenize {len(texts)} inputs...')
+    def _create_dataset(self, texts: List[str]) -> pd.DataFrame:
+        """Compile a pandas dataframe for the model inference.
+
+        Args:
+            texts: List of strings representing sentences/paragraphs for inference
+
+        Returns:
+            A dataframe dataset
+        """
+
+        logger.info("Tokenize %d inputs...", len(texts))
 
         # Save original text ordering for later use
-        dataset = {'text': texts, 'idx': range(len(texts))}
-        if is_split_into_words:
-            dataset['tokens'] = texts
-
-        dataset = Dataset.from_dict(dataset)
-        dataset = dataset.map(
-            encode, batched=True, batch_size=10000,
-            fn_kwargs={'tokenizer': self.tokenizer, 'nlp': self.nlp if not is_split_into_words else None}
-        )
+        dataset = {"text": texts, "idx": range(len(texts))}
+        dataset.update(encode(dataset, self.tokenizer, self.nlp))
+        dataset = pd.DataFrame.from_dict(dataset)  # pyright: ignore
 
         return dataset
 
-    def _prepare_batches(self, dataset, max_tokens_in_batch):
+    def _prepare_batches(
+        self, dataset: pd.DataFrame, max_tokens_in_batch: int
+    ) -> DynamicBatchSampler:
+        """Create dynamic batches.
+
+        Args:
+            dataset: a dataframe dataset
+            max_tokens_in_batch: maximum number of tokens in a single input batch
+
+        Returns:
+            an instance of DynamicBatchSampler as a dataloader
+        """
+
         dataloader = DynamicBatchSampler(
             dataset,
             collator=self.collator,
             max_tokens=max_tokens_in_batch,
             max_segment_len=self.max_segment_len,
-            max_doc_len=self.max_doc_len
+            max_doc_len=self.max_doc_len,  # type: ignore
         )
 
         return dataloader
 
-    def _batch_inference(self, batch):
-        texts = batch['text']
-        subtoken_map = batch['subtoken_map']
-        token_to_char = batch['offset_mapping']
-        idxs = batch['idx']
+    # pylint: disable=too-many-locals
+    def _batch_inference(self, batch: BatchEncoding) -> List[CorefResult]:
+        """Does inference on batches of data.
+
+        Args:
+            batch: an encoded batch of input
+
+        Returns:
+            List of CorefResult instances
+        """
+
+        texts = batch["text"]
+        subtoken_map = batch["subtoken_map"]
+        token_to_char = batch["offset_mapping"]
+        idxs = batch["idx"]
         with torch.no_grad():
-            outputs = self.model(batch, return_all_outputs=True)
+            outputs = self.model(batch, return_all_outputs=True)  # pyright: ignore
 
         outputs_np = tuple(tensor.cpu().numpy() for tensor in outputs)
 
-        span_starts, span_ends, mention_logits, coref_logits = outputs_np
-        doc_indices, mention_to_antecedent = create_mention_to_antecedent(span_starts, span_ends, coref_logits)
+        span_starts, span_ends, _, coref_logits = outputs_np
+        doc_indices, mention_to_antecedent = create_mention_to_antecedent(
+            span_starts, span_ends, coref_logits
+        )
 
         results = []
 
-        for i in range(len(texts)):
-            doc_mention_to_antecedent = mention_to_antecedent[np.nonzero(doc_indices == i)]
+        for i, _ in enumerate(texts):  # type: ignore
+            doc_mention_to_antecedent = mention_to_antecedent[
+                np.nonzero(doc_indices == i)
+            ]
             predicted_clusters = create_clusters(doc_mention_to_antecedent)
 
             char_map, reverse_char_map = align_to_char_level(
-                span_starts[i], span_ends[i], token_to_char[i], subtoken_map[i]
+                span_starts[i], span_ends[i], token_to_char[i], subtoken_map[i]  # type: ignore
             )
 
             result = CorefResult(
-                text=texts[i], clusters=predicted_clusters,
-                char_map=char_map, reverse_char_map=reverse_char_map,
-                coref_logit=coref_logits[i], text_idx=idxs[i]
+                text=texts[i],  # type: ignore
+                clusters=predicted_clusters,  # type: ignore
+                char_map=char_map,
+                reverse_char_map=reverse_char_map,
+                coref_logit=coref_logits[i],
+                text_idx=idxs[i],  # type: ignore
             )
 
             results.append(result)
 
         return results
 
-    def _inference(self, dataloader):
-        self.model.eval()
-        logger.info(f"***** Running Inference on {len(dataloader.dataset)} texts *****")
+    def _inference(self, dataloader: DynamicBatchSampler) -> List[CorefResult]:
+        """Run inference using a dynamic data loader.
+
+        Args:
+            dataloader: a dataloader instance
+
+        Returns:
+            List of CorefResult instance
+        """
+
+        self.model.eval()  # pyright: ignore
+        logger.info(
+            "***** Running Inference on %d texts *****", len(dataloader.dataset)
+        )
 
         results = []
         if self.enable_progress_bar:
             with tqdm(desc="Inference", total=len(dataloader.dataset)) as progress_bar:
                 for batch in dataloader:
-                    results.extend(self._batch_inference(batch))
-                    progress_bar.update(n=len(batch['text']))
+                    results.extend(self._batch_inference(batch))  # type: ignore
+                    progress_bar.update(n=len(batch["text"]))  # type: ignore
         else:
             for batch in dataloader:
-                results.extend(self._batch_inference(batch))
+                results.extend(self._batch_inference(batch))  # type: ignore
 
         return sorted(results, key=lambda res: res.text_idx)
 
-    def predict(self,
-                texts: Union[str, List[str], List[List[str]]],  # similar to huggingface tokenizer inputs
-                is_split_into_words: bool = False,
-                max_tokens_in_batch: int = 10000,
-                output_file: str = None):
-        """
-        texts (str, List[str], List[List[str]]) — The sequence or batch of sequences to be encoded.
-        Each sequence can be a string or a list of strings (pretokenized string).
-        If the sequences are provided as list of strings (pretokenized), you must set is_split_into_words=True
-        (to lift the ambiguity with a batch of sequences).
-        is_split_into_words - indicate if the texts input is tokenized
+    def predict(
+        self,
+        texts: List[str],  # similar to huggingface tokenizer inputs
+        max_tokens_in_batch: int = 10000,
+    ) -> List[CorefResult]:
+        """Predict the coref clusters of a list of texts.
+
+        Args:
+            texts: The sequence to be encoded. Each sequence should be a string.
+            max_tokens_in_batch: maximum number of tokens in a single input batch
+
+        Returns:
+            List of CorefResult instance
         """
 
         # Input type checking for clearer error
-        def _is_valid_text_input(texts, is_split_into_words):
-            if isinstance(texts, str) and not is_split_into_words:
-                # Strings are fine
-                return True
-            elif isinstance(texts, (list, tuple)):
+        # pylint: disable=no-else-return
+        def _is_valid_text_input(texts):
+            if isinstance(texts, (list, tuple)):
                 # List are fine as long as they are...
                 if len(texts) == 0:
                     # ... empty
@@ -225,41 +278,20 @@ class CorefModel(ABC):
                 elif all([isinstance(t, str) for t in texts]):
                     # ... list of strings
                     return True
-                elif all([isinstance(t, (list, tuple)) for t in texts]):
-                    # ... list with an empty list or with a list of strings
-                    return len(texts[0]) == 0 or isinstance(texts[0][0], str)
                 else:
                     return False
             else:
                 return False
 
-        if not _is_valid_text_input(texts, is_split_into_words):
+        if not _is_valid_text_input(texts):
             raise ValueError(
-                "text input must be of type `str` (single example), `List[str]` (batch or single pretokenized example) "
-                "or `List[List[str]]` (batch of pretokenized examples)."
+                "text input must be of type `List[str]` (batch or single pretokenized example) "
             )
 
-        if is_split_into_words:
-            is_batched = isinstance(texts, (list, tuple)) and texts and isinstance(texts[0], (list, tuple))
-        else:
-            is_batched = isinstance(texts, (list, tuple))
-
-        if not is_batched:
-            texts = [texts]
-
-        dataset = self._create_dataset(texts, is_split_into_words)
+        dataset = self._create_dataset(texts)
         dataloader = self._prepare_batches(dataset, max_tokens_in_batch)
 
         preds = self._inference(dataloader)
-        if output_file is not None:
-            with open(output_file, 'w') as f:
-                data = [{'text': p.text,
-                         'clusters': p.get_clusters(as_strings=False),
-                         'clusters_strings': p.get_clusters(as_strings=True)}
-                        for p in preds]
-                f.write('\n'.join(map(json.dumps, data)))
-        if not is_batched:
-            return preds[0]
         return preds
 
 

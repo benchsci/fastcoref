@@ -1,7 +1,9 @@
+from typing import List, Tuple
+
 from spacy import Language, util
 from spacy.tokens import Doc, Span
+
 from fastcoref import FCoref, LingMessCoref
-from typing import List, Tuple
 
 
 @Language.factory(

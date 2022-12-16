@@ -1,8 +1,10 @@
 import logging
 import os
 import random
-import torch
+
 import numpy as np
+import torch
+
 from fastcoref.utilities.consts import NULL_ID_FOR_COREF, CATEGORIES, PRONOUNS_GROUPS
 
 logger = logging.getLogger(__name__)
