@@ -116,12 +116,6 @@ class CorefModel(ABC):
         )
         self.model.to(self.device)
 
-        for key, val in loading_info.items():
-            logger.info(f'{key}: {list(set(val) - {"longformer.embeddings.position_ids"})}')
-        t_params, h_params = [p / 1000000 for p in self.model.num_parameters()]
-        logger.info(f'Model Parameters: {t_params + h_params:.1f}M, '
-                    f'Transformer: {t_params:.1f}M, Coref head: {h_params:.1f}M')
-
         set_seed(self)
         transformers.logging.set_verbosity_error()
 
