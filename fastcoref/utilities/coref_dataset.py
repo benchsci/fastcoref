@@ -38,7 +38,7 @@ def _tokenize(tokenizer, tokens, clusters, speakers):
 
     encoded_text = tokenizer(
         new_tokens, add_special_tokens=True, is_split_into_words=True,
-        return_length=True, return_attention_mask=False
+        return_length=True, return_attention_mask=False, truncation=True
     )
 
     # shifting clusters indices to align with bpe tokens

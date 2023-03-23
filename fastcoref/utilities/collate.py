@@ -102,7 +102,7 @@ class DynamicBatchSampler:
         max_doc_len: Optional[int] = None,
     ):
         self.max_tokens = max_tokens
-        self.dataset = dataset.sort_values(["length"], ascending=True)
+        self.dataset = dataset.sort_values(["length"], ascending=False)
         self.collator = collator
         self.max_segment_len = max_segment_len
         self.max_doc_len = max_doc_len

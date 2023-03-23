@@ -67,7 +67,7 @@ class CorefResult:
 
 
 class CorefModel(ABC):
-    def __init__(self, model_name_or_path, coref_class, collator_class, enable_progress_bar, device=None, nlp=None):
+    def __init__(self, model_name_or_path, coref_class, collator_class, enable_progress_bar, device=None, nlp=None, max_model_tokens: int = 10000):
         """Initializer.
 
         Args:
@@ -87,7 +87,7 @@ class CorefModel(ABC):
 
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name_or_path, use_fast=True,
-            add_prefix_space=True, verbose=False
+            add_prefix_space=True, verbose=False, model_max_length=max_model_tokens
         )
 
         if collator_class == PadCollator:
@@ -290,10 +290,10 @@ class CorefModel(ABC):
 
 
 class FCoref(CorefModel):
-    def __init__(self, model_name_or_path='biu-nlp/f-coref', device=None, nlp=None, enable_progress_bar=True):
-        super().__init__(model_name_or_path, FCorefModel, LeftOversCollator, enable_progress_bar, device, nlp)
+    def __init__(self, model_name_or_path='biu-nlp/f-coref', device=None, nlp=None, enable_progress_bar=True, max_model_tokens: int = 10000):
+        super().__init__(model_name_or_path, FCorefModel, LeftOversCollator, enable_progress_bar, device, nlp, max_model_tokens)
 
 
 class LingMessCoref(CorefModel):
-    def __init__(self, model_name_or_path='biu-nlp/lingmess-coref', device=None, nlp=None, enable_progress_bar=True):
-        super().__init__(model_name_or_path, LingMessModel, PadCollator, enable_progress_bar, device, nlp)
+    def __init__(self, model_name_or_path='biu-nlp/lingmess-coref', device=None, nlp=None, enable_progress_bar=True, max_model_tokens: int = 10000):
+        super().__init__(model_name_or_path, LingMessModel, PadCollator, enable_progress_bar, device, nlp, max_model_tokens)

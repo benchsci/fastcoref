@@ -94,7 +94,7 @@ def encode(batch, tokenizer, nlp):
                                              for tokens in tokenized_texts['tokens']]
     encoded_batch = tokenizer(
         tokenized_texts['tokens'], add_special_tokens=True, is_split_into_words=True,
-        return_length=True, return_attention_mask=False
+        return_length=True, return_attention_mask=False, truncation=True
     )
     return {
         'tokens': tokenized_texts['tokens'],
